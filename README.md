@@ -72,8 +72,50 @@ With all parameters shown explicitly:
 ```
 SCDetectEOD(th_histY=300, th_histUV=300,
             th_flicker_mean=5, th_flicker_hist=100,
-            min_scene=12, debug=false)
+            min_scene=12, downscale=0, ignore_borders=0,
+            mono=false, debug=false)
 ```
+
+**For black-and-white material**, set `mono=true`:
+
+```
+src = LWLibavVideoSource("bw_movie.mkv").ConvertToYV12()
+sd  = src.SCDetectEOD(mono=true)
+```
+
+Without `mono=true` on B&W material, the detector will never fire — the
+UV criterion is unsatisfiable when chroma is effectively constant.
+
+**For HD material** where performance matters, use `downscale=2`:
+
+```
+sd = src.SCDetectEOD(downscale=2)
+```
+
+This processes a box-averaged 2× smaller version internally. Compute cost
+drops roughly 4×; detection accuracy is preserved because the thresholds
+are normalized per pixel. On very large frames (4K) use `downscale=4`.
+
+**Resolution minimums for downscale.** The UV 2D histogram has 256 bins
+and needs enough samples per bin to stay numerically stable. Each
+downscale step divides the UV sample count by N², and below roughly 200
+samples per bin the normalized `dHistUV` values inflate — intra-scene
+noise becomes comparable to real cut differences, giving false positives.
+
+Safe rules of thumb:
+
+| Source resolution | `downscale=2` | `downscale=4` |
+|---|---|---|
+| 720×576 (DVD) | ❌ too small | ❌ too small |
+| 1280×720 (HD) | ⚠ borderline | ❌ too small |
+| 1472×1080 (your HD) | ✅ OK | ❌ too small |
+| 1920×1080 (FHD) | ✅ OK | ⚠ borderline |
+| 3840×2160 (4K) | ✅ OK | ✅ OK |
+
+If you see false positives or unstable detection after enabling downscale,
+disable it — the source is too small for the factor you chose. SD and
+standard HD material generally does not need downscale at all; the cost
+at 720×576 or 1280×720 is already low.
 
 Noisy sources (scanned film, VHS rips, grainy DVDs) can add random jitter
 to the UV histograms that inflates `dHistUV` between otherwise-identical
@@ -95,10 +137,13 @@ choose to do so.
 | Name | Default | Meaning |
 |---|---|---|
 | `th_histY` | 300 | Minimum L1 distance between Y histograms for a cut. Higher = fewer cuts. Values are normalized ×1000 / pixel count, so they are resolution-independent. |
-| `th_histUV` | 300 | Minimum L1 distance between 16×16 UV histograms for a cut. Both Y and UV must exceed their thresholds simultaneously. |
+| `th_histUV` | 300 | Minimum L1 distance between 16×16 UV histograms for a cut. Both Y and UV must exceed their thresholds simultaneously. Ignored in mono mode. |
 | `th_flicker_mean` | 5 | Flicker guard: frames where `\|meanY[n] - meanY[n-1]\|` exceeds this are candidates for flicker rejection. |
 | `th_flicker_hist` | 100 | Flicker guard: if `dHistY` is below this while `dMeanY` is above `th_flicker_mean`, the transition is classified as global brightness flicker and NOT marked as a cut. |
 | `min_scene` | 12 | Minimum allowed gap between two cut boundaries, in frames. Suppresses rapid-fire false positives: fade residuals, flash frames, single-frame extreme intra-scene motion. A scene cannot be shorter than this. |
+| `downscale` | 0 | Internal box-average downscale factor, 0 (off), 2, or 4. When non-zero, each N×N block of Y and UV pixels is averaged to one sample before histogramming. Reduces compute cost on HD material proportionally to N² without changing detection behavior (thresholds are normalized per pixel). On 1472×1080 material, `downscale=2` cuts work by ~4× and is visually indistinguishable from full-resolution analysis. |
+| `ignore_borders` | 0 | Number of pixels to skip on every side of the frame before building histograms. Use for material with dirty edges, visible film perforation, or letterbox/pillarbox that changes from scene to scene. Applied in the original resolution, before downscale. |
+| `mono` | false | Explicitly enable monochrome mode. Disables the UV criterion entirely — only dHistY is used for cut decisions. **Required for black-and-white material** — without this flag, a B&W clip will never produce any cuts because dHistUV is always near zero. |
 | `debug` | false | Currently a no-op; reserved. Metric overlay is done in AVS via the props below. |
 
 ### Frame properties written
